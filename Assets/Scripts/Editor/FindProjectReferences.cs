@@ -83,6 +83,8 @@ public class FindProject
 	{
 		var appDataPath = Application.dataPath;
 		var selectedAssetPath = AssetDatabase.GetAssetPath (Selection.activeObject);
+
+        var selectedAssetName = Selection.activeObject.name;
 		
 		var guid = AssetDatabase.AssetPathToGUID (selectedAssetPath);
 
@@ -100,7 +102,7 @@ public class FindProject
 
         var pathArgment = " -d \"" + appDataPath.Replace("/", "\\") + "\" ";
 	    var fileTypeArgment = " -f \"*.unity;*.prefab;*.asset;*.mat\" ";
-	    var searchArgment = " -c \"" + guid + "\" ";
+	    var searchArgment = " -ceb -cm -c \"" + guid + "\" ";
         var outputFileArgment = "-ofb -o \"" + uniqueTempPathInProject.Replace("/", "\\") + "\" ";
 
         processStartInfo.Arguments = pathArgment + fileTypeArgment + searchArgment + outputFileArgment;
@@ -142,13 +144,13 @@ public class FindProject
 
                 var file = fields[0].Substring(assets);
 
-                Debug.Log(file + " references " + selectedAssetPath, AssetDatabase.LoadMainAssetAtPath(file));
+                Debug.Log(file + " references " + selectedAssetName, AssetDatabase.LoadMainAssetAtPath(file));
 
                 referencesFound++;
             }
         }
 
-        Debug.Log("Found " + referencesFound + " references for " + selectedAssetPath, Selection.activeObject);
+        Debug.Log("Found " + referencesFound + " references for " + selectedAssetName +  " in " + process.TotalProcessorTime , Selection.activeObject);
 	}
 
 #endif
