@@ -1,70 +1,126 @@
 ﻿using System;
 using UnityEngine;
-using System.Collections;
 using UnityEditor;
 using System.Collections.Generic;
 using System.IO;
-using Microsoft.Win32;
 
-public class FindProject
+public class FindProject : ScriptableWizard
 {
-    
+    public UnityEngine.Object m_source;
+    public UnityEngine.Object m_replacement;
+
+    [MenuItem("Assets/Replace References In Project", false, 2000)]
+    static void CreateWizard()
+    {
+        var wizard = DisplayWizard<FindProject>("Replace Project References", "Replace");
+
+        wizard.m_source = Selection.activeObject;
+    }
+
+    void OnWizardCreate()
+    {
+        if (m_source == null || m_replacement == null)
+        {
+            Debug.LogError("Source and replacement need to be set");
+            return;
+        }
+
+        var references = FindReferences(m_source);
+
+        if (references == null)
+        {
+            return;
+        }
+
+        var sourceGUID = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m_source));
+        var replacementGUID = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m_replacement));
+
+        foreach (var reference in references)
+        {
+            var text = System.IO.File.ReadAllText(reference);
+            text = text.Replace(sourceGUID, replacementGUID);
+            System.IO.File.WriteAllText(reference, text);
+        }
+
+        Debug.Log("Replaced " + references.Count + " references for " + m_source.name);
+    }
+
+    [MenuItem("Assets/Find References In Project", false, 2000)]
+    private static void FindProjectReferences()
+    {
+        var references = FindReferences(Selection.activeObject);
+
+        if (references == null)
+        {
+            return;
+        }
+
+        var selectedAssetName = Selection.activeObject.name;
+
+        foreach (var reference in references)
+        {
+            Debug.Log(reference + " references " + selectedAssetName, AssetDatabase.LoadMainAssetAtPath(reference));
+        }
+
+        Debug.Log("Found " + references.Count + " references for " + selectedAssetName, Selection.activeObject);
+    }
+
+
 #if UNITY_EDITOR_OSX
-	
-	[MenuItem("Assets/Find References In Project", false, 2000)]
-	private static void FindProjectReferences()
-	{
-		string appDataPath = Application.dataPath;
-		string output = "";
-		string selectedAssetPath = AssetDatabase.GetAssetPath (Selection.activeObject);
-		List<string> references = new List<string>();
-		
-		string guid = AssetDatabase.AssetPathToGUID (selectedAssetPath);
-		
-		var psi = new System.Diagnostics.ProcessStartInfo();
-		psi.WindowStyle = System.Diagnostics.ProcessWindowStyle.Maximized;
-		psi.FileName = "/usr/bin/mdfind";
-		psi.Arguments = "-onlyin " + Application.dataPath + " " + guid;
-		psi.UseShellExecute = false;
-		psi.RedirectStandardOutput = true;
-		psi.RedirectStandardError = true;
-		
-		System.Diagnostics.Process process = new System.Diagnostics.Process();
-		process.StartInfo = psi;
-		
-		process.OutputDataReceived += (sender, e) => {
-			if(string.IsNullOrEmpty(e.Data))
-				return;
-			
-			string relativePath = "Assets" + e.Data.Replace(appDataPath, "");
-			
-			// we don't care about meta files.
-			if(relativePath == selectedAssetPath + ".meta")
-				return;
-			
-			references.Add(relativePath);
-			
-		};
-		process.ErrorDataReceived += (sender, e) => {
-			if(string.IsNullOrEmpty(e.Data))
-				return;
-			
-			output += "Error: " + e.Data + "\n";
-		};
-		process.Start();
-		process.BeginOutputReadLine();
-		process.BeginErrorReadLine();
-		
-		process.WaitForExit(2000);
-		
-		foreach(var file in references){
-			output += file + "\n";
-			Debug.Log(file, AssetDatabase.LoadMainAssetAtPath(file));
-		}
-		
-		Debug.LogWarning(references.Count + " references found for object " + Selection.activeObject.name + "\n\n" + output);
-	}
-	
+
+    public static List<string> FindReferences(UnityEngine.Object a_activeObject)
+    {
+        var appDataPath = Application.dataPath;
+
+        var selectedAssetPath = AssetDatabase.GetAssetPath(a_activeObject);
+        var references = new List<string>();
+
+        var guid = AssetDatabase.AssetPathToGUID(selectedAssetPath);
+
+        var psi = new System.Diagnostics.ProcessStartInfo();
+        psi.WindowStyle = System.Diagnostics.ProcessWindowStyle.Maximized;
+        psi.FileName = "/usr/bin/mdfind";
+        psi.Arguments = "-onlyin " + appDataPath + " " + guid;
+        psi.UseShellExecute = false;
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
+
+        System.Diagnostics.Process process = new System.Diagnostics.Process {StartInfo = psi};
+
+        process.OutputDataReceived += (sender, e) =>
+        {
+            if (string.IsNullOrEmpty(e.Data))
+            {
+                return;
+            }
+
+            string relativePath = "Assets" + e.Data.Replace(appDataPath, "");
+
+            // we don't care about meta files.
+            if (relativePath == selectedAssetPath + ".meta")
+            {
+                return;
+            }
+
+            references.Add(relativePath);
+        };
+        //process.ErrorDataReceived += (sender, e) =>
+        //{
+        //    if (string.IsNullOrEmpty(e.Data))
+        //    {
+        //        return;
+        //    }
+
+        //    output += "Error: " + e.Data + "\n";
+        //};
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        process.WaitForExit(2000);
+        return references;
+    }
+
 #else
 
     private static string AgentRansackPath()
@@ -72,48 +128,42 @@ public class FindProject
         //HKEY_CURRENT_USER\Software\Microsoft\IntelliPoint\AppSpecific\AgentRansack.exe Path
         //HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\AgentRansack.EXE (Default)
 
-        var path = Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\AgentRansack.EXE",
+        var path = Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\AgentRansack.EXE",
             null, null) as string;
 
         return path;
     }
 
-    [MenuItem("Assets/Find References In Project", false, 2000)]
-	private static void FindProjectReferences()
-	{
-		var appDataPath = Application.dataPath;
-		var selectedAssetPath = AssetDatabase.GetAssetPath (Selection.activeObject);
+    public static List<string> FindReferences(UnityEngine.Object a_activeObject)
+    {
+        var guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(a_activeObject));
 
-        var selectedAssetName = Selection.activeObject.name;
-		
-		var guid = AssetDatabase.AssetPathToGUID (selectedAssetPath);
+        var agantRansackPath = AgentRansackPath();
 
-	    var agantRansackPath = AgentRansackPath();
-
-	    if (string.IsNullOrEmpty(agantRansackPath) || !File.Exists(agantRansackPath))
-	    {
+        if (string.IsNullOrEmpty(agantRansackPath) || !File.Exists(agantRansackPath))
+        {
             Debug.LogError("Please install Agent Ransack https://www.mythicsoft.com/agentransack");
-	        return;
-	    }
+            return null;
+        }
 
-	    var processStartInfo = new System.Diagnostics.ProcessStartInfo {FileName = agantRansackPath};
+        var processStartInfo = new System.Diagnostics.ProcessStartInfo { FileName = agantRansackPath };
 
-	    var uniqueTempPathInProject = Path.GetFullPath(FileUtil.GetUniqueTempPathInProject());
+        var uniqueTempPathInProject = Path.GetFullPath(FileUtil.GetUniqueTempPathInProject());
 
-        var pathArgment = " -d \"" + appDataPath.Replace("/", "\\") + "\" ";
-	    var fileTypeArgment = " -f \"*.unity;*.prefab;*.asset;*.mat\" ";
-	    var searchArgment = " -ceb -cm -c \"" + guid + "\" ";
+        var pathArgment = " -d \"" + Application.dataPath.Replace("/", "\\") + "\" ";
+        var fileTypeArgment = " -f \"*.unity;*.prefab;*.asset;*.mat\" ";
+        var searchArgment = " -ceb -cm -c \"" + guid + "\" ";
         var outputFileArgment = "-ofb -o \"" + uniqueTempPathInProject.Replace("/", "\\") + "\" ";
 
         processStartInfo.Arguments = pathArgment + fileTypeArgment + searchArgment + outputFileArgment;
 
-	    var process = new System.Diagnostics.Process {StartInfo = processStartInfo};
+        var process = new System.Diagnostics.Process { StartInfo = processStartInfo };
 
-	    process.Start();
+        process.Start();
 
         process.WaitForExit();
 
-	    var referencesFound = 0;
+        var references = new List<string>();
 
         using (
             var outputFile =
@@ -142,17 +192,16 @@ public class FindProject
                     continue;
                 }
 
-                var file = fields[0].Substring(assets);
-
-                Debug.Log(file + " references " + selectedAssetName, AssetDatabase.LoadMainAssetAtPath(file));
-
-                referencesFound++;
+                references.Add(fields[0].Substring(assets));
             }
         }
-
-        Debug.Log("Found " + referencesFound + " references for " + selectedAssetName +  " in " + process.TotalProcessorTime , Selection.activeObject);
-	}
+        return references;
+    }
 
 #endif
+
+
+   
+
    
 }
