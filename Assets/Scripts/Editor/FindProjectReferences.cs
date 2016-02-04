@@ -2,77 +2,227 @@
 using UnityEngine;
 using UnityEditor;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Debug = UnityEngine.Debug;
+using Object = UnityEngine.Object;
 
-public class FindProject : ScriptableWizard
+public class FindProjectReferences : EditorWindow
 {
-    public UnityEngine.Object m_source;
-    public UnityEngine.Object m_replacement;
+    private const string ResourcesDir = "Resources/";
+    private Object[] m_sources;
 
-    [MenuItem("Assets/Replace References In Project", false, 2000)]
-    static void CreateWizard()
-    {
-        var wizard = DisplayWizard<FindProject>("Replace Project References", "Replace");
+    [SerializeField]
+    private Object m_replacement;
+    private List<string> m_references;
 
-        wizard.m_source = Selection.activeObject;
-    }
+    [SerializeField]
+    private DefaultAsset m_directory;
 
-    void OnWizardCreate()
-    {
-        if (m_source == null || m_replacement == null)
-        {
-            Debug.LogError("Source and replacement need to be set");
-            return;
-        }
-
-        var references = FindReferences(m_source);
-
-        if (references == null)
-        {
-            return;
-        }
-
-        var sourceGUID = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m_source));
-        var replacementGUID = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m_replacement));
-
-        foreach (var reference in references)
-        {
-            var text = System.IO.File.ReadAllText(reference);
-            text = text.Replace(sourceGUID, replacementGUID);
-            System.IO.File.WriteAllText(reference, text);
-        }
-
-        Debug.Log("Replaced " + references.Count + " references for " + m_source.name);
-    }
+    private Process m_process;
+    private string m_outputPath;
 
     [MenuItem("Assets/Find References In Project", false, 2000)]
-    private static void FindProjectReferences()
+    static void ShowWindow()
     {
-        var references = FindReferences(Selection.activeObject);
+        var window = GetWindow(typeof(FindProjectReferences)) as FindProjectReferences;
 
-        if (references == null)
+        if (window != null)
         {
-            return;
+            window.m_sources = Selection.objects;
+            window.SetDefaultDirectory();
+            window.StartProcess();
         }
-
-        var selectedAssetName = Selection.activeObject.name;
-
-        foreach (var reference in references)
-        {
-            Debug.Log(reference + " references " + selectedAssetName, AssetDatabase.LoadMainAssetAtPath(reference));
-        }
-
-        Debug.Log("Found " + references.Count + " references for " + selectedAssetName, Selection.activeObject);
     }
+
+    public void SetDefaultDirectory()
+    {
+        if (!m_directory || string.IsNullOrEmpty(AssetDatabase.GetAssetPath(m_directory)))
+        {
+            m_directory = AssetDatabase.LoadAssetAtPath<DefaultAsset>("Assets");
+        }
+    }
+
+    void OnGUI()
+    {
+        GUILayout.Label(m_sources.Length > 1 ? "Find Multiple References" : "Find References", EditorStyles.boldLabel);
+
+        m_directory = EditorGUILayout.ObjectField("Directory : ", m_directory, typeof(DefaultAsset), false, null) as DefaultAsset;
+
+        var firstObject = m_sources.Any() ? m_sources[0] : null;
+
+        var newFirstObject = EditorGUILayout.ObjectField("Find : ", firstObject, typeof(Object), false, null);
+
+        if (newFirstObject != firstObject)
+        {
+            m_sources = new[] {newFirstObject};
+        }
+                
+
+        if (m_process != null && !m_process.HasExited)
+        {
+            //Show spinner
+            GUILayout.Label("Searching...");
+        }
+        else
+        {
+            if (GUILayout.Button("Find"))
+            {
+                StartProcess();
+            }
+
+            if (m_references != null)
+            {
+                GUILayout.Label("Found " + m_references.Count + " references", EditorStyles.boldLabel);
+
+                foreach (var reference in m_references)
+                {
+                    GUILayout.BeginHorizontal();
+
+                    //GUILayout.Label(AssetDatabase.GetCachedIcon(reference));
+
+                    //if (GUILayout.Button(Path.GetFileNameWithoutExtension(reference))) //, "Label"
+                    //{
+                    //    Selection.activeObject = AssetDatabase.LoadMainAssetAtPath(reference);
+                    //}
+
+                    EditorGUILayout.ObjectField(AssetDatabase.LoadMainAssetAtPath(reference), typeof(Object), false, null);
+
+                    GUILayout.EndHorizontal();
+                }
+
+                if (m_references.Any())
+                {
+                    m_replacement = EditorGUILayout.ObjectField("Replace : ", m_replacement, typeof(Object), false, null);
+
+                    if (GUILayout.Button("Replace"))
+                    {
+                        var textReplacements = new List<KeyValuePair<string, string>>(m_sources.Length);
+
+                        var replacementAssetPath = AssetDatabase.GetAssetPath(m_replacement);
+                        var replacementGUID = AssetDatabase.AssetPathToGUID(replacementAssetPath);
+
+                        var replacementResourcesIndex = replacementAssetPath.IndexOf(ResourcesDir, StringComparison.OrdinalIgnoreCase);
+
+
+                        foreach (var source in m_sources)
+                        {
+                            var sourceAssetPath = AssetDatabase.GetAssetPath(source);
+                            var sourceGUID = AssetDatabase.AssetPathToGUID(sourceAssetPath);
+
+                            textReplacements.Add(new KeyValuePair<string, string>(sourceGUID, replacementGUID));
+
+                            var sourceResourcesIndex = sourceAssetPath.IndexOf(ResourcesDir, StringComparison.OrdinalIgnoreCase);
+
+                            if (sourceResourcesIndex >= 0 && replacementResourcesIndex >= 0)
+                            {
+                                var sourceResourcesPath = Path.ChangeExtension(sourceAssetPath.Substring(sourceResourcesIndex + ResourcesDir.Length), null);
+                                var replacementResourcesPath = Path.ChangeExtension(replacementAssetPath.Substring(replacementResourcesIndex + ResourcesDir.Length), null);
+
+                                textReplacements.Add(new KeyValuePair<string, string>(sourceResourcesPath,
+                                    replacementResourcesPath));
+                            }
+
+                            //var assetImporter = AssetImporter.GetAtPath(sourceAssetPath);
+                            //if (assetImporter != null && !string.IsNullOrEmpty(assetImporter.assetBundleName))
+                            //{
+                            //    var assetbundlepath = assetPath.Remove(0, 7);
+                            //    searchArgment += " OR " + assetbundlepath;
+                            //}
+                        }
+
+                        foreach (var reference in m_references)
+                        {
+                            var text = File.ReadAllText(reference);
+
+                            foreach (var textReplacement in textReplacements)
+                            {
+                                text = Regex.Replace(text, string.Format(@"\b{0}\b", textReplacement.Key), textReplacement.Value);
+                            }
+                            
+                            File.WriteAllText(reference, text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void Update()
+    {
+        if (m_process != null && m_process.HasExited)
+        {
+            m_process = null;
+
+            ParseResults();
+
+            Repaint();
+        }
+    }
+
+    private void ParseResults()
+    {
+        m_references = new List<string>();
+
+        using (
+            var outputFile =
+                new StreamReader(File.Open(m_outputPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
+        {
+            while (true)
+            {
+                var logLine = outputFile.ReadLine();
+
+                if (logLine == null)
+                {
+                    break;
+                }
+
+                var fields = logLine.Split('\t');
+
+                if (fields.Length <= 0)
+                {
+                    continue;
+                }
+
+                var assets = fields[0].IndexOf("Assets", StringComparison.Ordinal);
+
+                if (assets < 0)
+                {
+                    continue;
+                }
+
+                m_references.Add(fields[0].Substring(assets));
+            }
+        }
+    }
+
+    private void StartProcess()
+    {
+        if (m_process == null)
+        {
+            m_references = null;
+            m_outputPath = Path.GetFullPath(FileUtil.GetUniqueTempPathInProject());
+
+            var directoryPath = AssetDatabase.GetAssetPath(m_directory);
+
+            var path = string.IsNullOrEmpty(directoryPath) ? Application.dataPath : Path.GetFullPath(directoryPath);
+
+            m_process = CreateProcess(m_sources, path, m_outputPath);
+            m_process.Start();
+        }
+    }
+
 
 
 #if UNITY_EDITOR_OSX
 
-    public static List<string> FindReferences(UnityEngine.Object a_activeObject)
+    public static List<string> FindReferences(UnityEngine.Object a_objects)
     {
         var appDataPath = Application.dataPath;
 
-        var selectedAssetPath = AssetDatabase.GetAssetPath(a_activeObject);
+        var selectedAssetPath = AssetDatabase.GetAssetPath(a_objects);
         var references = new List<string>();
 
         var guid = AssetDatabase.AssetPathToGUID(selectedAssetPath);
@@ -134,10 +284,8 @@ public class FindProject : ScriptableWizard
         return path;
     }
 
-    public static List<string> FindReferences(UnityEngine.Object a_activeObject)
+    private static Process CreateProcess(Object[] a_objects, string a_path, string a_outputPath)
     {
-        var guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(a_activeObject));
-
         var agantRansackPath = AgentRansackPath();
 
         if (string.IsNullOrEmpty(agantRansackPath) || !File.Exists(agantRansackPath))
@@ -146,56 +294,43 @@ public class FindProject : ScriptableWizard
             return null;
         }
 
-        var processStartInfo = new System.Diagnostics.ProcessStartInfo { FileName = agantRansackPath };
+        var processStartInfo = new ProcessStartInfo {FileName = agantRansackPath};
 
-        var uniqueTempPathInProject = Path.GetFullPath(FileUtil.GetUniqueTempPathInProject());
-
-        var pathArgment = " -d \"" + Application.dataPath.Replace("/", "\\") + "\" ";
+        var pathArgment = " -d \"" + a_path.Replace("/", "\\") + "\" ";
         var fileTypeArgment = " -f \"*.unity;*.prefab;*.asset;*.mat\" ";
-        var searchArgment = " -ceb -cm -c \"" + guid + "\" ";
-        var outputFileArgment = "-ofb -o \"" + uniqueTempPathInProject.Replace("/", "\\") + "\" ";
+
+        var searchArgment = " -ceb -cm -c \"";
+
+        for (var index = 0; index < a_objects.Length; index++)
+        {
+            var activeObject = a_objects[index];
+            var assetPath = AssetDatabase.GetAssetPath(activeObject);
+            var guid = AssetDatabase.AssetPathToGUID(assetPath);
+
+            searchArgment += index > 0 ? " OR " + guid : guid;
+
+            var resourcesIndex = assetPath.IndexOf(ResourcesDir, StringComparison.OrdinalIgnoreCase);
+            if (resourcesIndex > 0)
+            {
+                var resourcesPath = Path.ChangeExtension(assetPath.Substring(resourcesIndex + ResourcesDir.Length), null);
+                searchArgment += " OR " + resourcesPath;
+            }
+
+            var assetImporter = AssetImporter.GetAtPath(assetPath);
+            if (assetImporter != null && !string.IsNullOrEmpty(assetImporter.assetBundleName))
+            {
+                var assetbundlepath = assetPath.Remove(0, 7);
+                searchArgment += " OR " + assetbundlepath;
+            }
+        }
+
+        searchArgment += " \" ";
+
+        var outputFileArgment = "-ofb -o \"" + a_outputPath.Replace("/", "\\") + "\" ";
 
         processStartInfo.Arguments = pathArgment + fileTypeArgment + searchArgment + outputFileArgment;
 
-        var process = new System.Diagnostics.Process { StartInfo = processStartInfo };
-
-        process.Start();
-
-        process.WaitForExit();
-
-        var references = new List<string>();
-
-        using (
-            var outputFile =
-                new StreamReader(File.Open(uniqueTempPathInProject, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
-        {
-            while (true)
-            {
-                var logLine = outputFile.ReadLine();
-
-                if (logLine == null)
-                {
-                    break;
-                }
-
-                var fields = logLine.Split('\t');
-
-                if (fields.Length <= 0)
-                {
-                    continue;
-                }
-
-                var assets = fields[0].IndexOf("Assets", StringComparison.Ordinal);
-
-                if (assets < 0)
-                {
-                    continue;
-                }
-
-                references.Add(fields[0].Substring(assets));
-            }
-        }
-        return references;
+        return new Process { StartInfo = processStartInfo };
     }
 
 #endif
