@@ -156,19 +156,19 @@ public class FindProjectReferences : EditorWindow
         {
             m_process = null;
 
-            ParseResults();
+            m_references = ParseResults(m_references, m_outputPath);
 
             Repaint();
         }
     }
 
-    private void ParseResults()
+    public static List<string> ParseResults(List<string> a_references, string a_outputPath)
     {
-        m_references = new List<string>();
+        a_references = new List<string>();
 
         using (
             var outputFile =
-                new StreamReader(File.Open(m_outputPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
+                new StreamReader(File.Open(a_outputPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
         {
             while (true)
             {
@@ -193,9 +193,11 @@ public class FindProjectReferences : EditorWindow
                     continue;
                 }
 
-                m_references.Add(fields[0].Substring(assets));
+                a_references.Add(fields[0].Substring(assets));
             }
         }
+
+        return a_references;
     }
 
     private void StartProcess()
@@ -217,6 +219,11 @@ public class FindProjectReferences : EditorWindow
 
 
 #if UNITY_EDITOR_OSX
+
+    public static Process CreateProcess(Object[] a_objects, string a_path, string a_outputPath)
+    {
+        return null;
+    }
 
     public static List<string> FindReferences(UnityEngine.Object a_objects)
     {
@@ -284,7 +291,7 @@ public class FindProjectReferences : EditorWindow
         return path;
     }
 
-    private static Process CreateProcess(Object[] a_objects, string a_path, string a_outputPath)
+    public static Process CreateProcess(Object[] a_objects, string a_path, string a_outputPath)
     {
         var agantRansackPath = AgentRansackPath();
 
@@ -316,12 +323,13 @@ public class FindProjectReferences : EditorWindow
                 searchArgment += " OR " + resourcesPath;
             }
 
-            var assetImporter = AssetImporter.GetAtPath(assetPath);
-            if (assetImporter != null && !string.IsNullOrEmpty(assetImporter.assetBundleName))
-            {
-                var assetbundlepath = assetPath.Remove(0, 7);
-                searchArgment += " OR " + assetbundlepath;
-            }
+            //Asset bundle refs have the guid in anyway
+            //var assetImporter = AssetImporter.GetAtPath(assetPath);
+            //if (assetImporter != null && !string.IsNullOrEmpty(assetImporter.assetBundleName))
+            //{
+            //    var assetbundlepath = assetPath.Remove(0, 7);
+            //    searchArgment += " OR " + AssetBundleManager.BundleAndAssetToRef(assetImporter.assetBundleName, assetPath, guid);
+            //}
         }
 
         searchArgment += " \" ";
