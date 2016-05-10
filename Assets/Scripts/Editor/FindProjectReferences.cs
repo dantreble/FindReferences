@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using UnityEngine;
 using UnityEditor;
 using System.Collections.Generic;
@@ -154,6 +154,8 @@ public class FindProjectReferences : EditorWindow
     {
         if (m_process != null && m_process.HasExited)
         {
+            m_process.Close();
+
             m_process = null;
 
             m_references = ParseResults(m_references, m_outputPath);
@@ -222,60 +224,50 @@ public class FindProjectReferences : EditorWindow
 
     public static Process CreateProcess(Object[] a_objects, string a_path, string a_outputPath)
     {
-        return null;
-    }
+        // /bin/sh -c "/usr/bin/mdfind  -onlyin /Users/dan/Documents/hof2/Assets '(kMDItemDisplayName==*.unity||kMDItemDisplayName==*.prefab||kMDItemDisplayName==*.asset||kMDItemDisplayName==*.mat)&&(kMDItemTextContent=\"b0f572c827a1f6146a10c19119414b1c\"c)' > foo.foo"
+         
+        var pathArgment = " -onlyin " + a_path;
+        var fileTypeArgment = "(kMDItemDisplayName==*.unity||kMDItemDisplayName==*.prefab||kMDItemDisplayName==*.asset||kMDItemDisplayName==*.mat)";
 
-    public static List<string> FindReferences(UnityEngine.Object a_objects)
-    {
-        var appDataPath = Application.dataPath;
 
-        var selectedAssetPath = AssetDatabase.GetAssetPath(a_objects);
-        var references = new List<string>();
+        var searchArgment = "(";
 
-        var guid = AssetDatabase.AssetPathToGUID(selectedAssetPath);
-
-        var psi = new System.Diagnostics.ProcessStartInfo();
-        psi.WindowStyle = System.Diagnostics.ProcessWindowStyle.Maximized;
-        psi.FileName = "/usr/bin/mdfind";
-        psi.Arguments = "-onlyin " + appDataPath + " " + guid;
-        psi.UseShellExecute = false;
-        psi.RedirectStandardOutput = true;
-        psi.RedirectStandardError = true;
-
-        System.Diagnostics.Process process = new System.Diagnostics.Process {StartInfo = psi};
-
-        process.OutputDataReceived += (sender, e) =>
+        for (var index = 0; index < a_objects.Length; index++)
         {
-            if (string.IsNullOrEmpty(e.Data))
+            var activeObject = a_objects[index];
+            var assetPath = AssetDatabase.GetAssetPath(activeObject);
+            var guid = AssetDatabase.AssetPathToGUID(assetPath);
+
+            //This is faster, as it is case insensitive, but I can't get it to work
+            //var guidArgment = "kMDItemTextContent=\\\""+ guid + "\\\"c";
+
+            var guidArgment = "kMDItemTextContent="+ guid;
+
+            searchArgment += index > 0 ? "||" + guidArgment : guidArgment;
+
+            var resourcesIndex = assetPath.IndexOf(ResourcesDir, StringComparison.OrdinalIgnoreCase);
+            if (resourcesIndex > 0)
             {
-                return;
+                var resourcesPath = Path.ChangeExtension(assetPath.Substring(resourcesIndex + ResourcesDir.Length), null);
+                searchArgment += "||kMDItemTextContent=\\\"" + resourcesPath+ "\\\"";
             }
 
-            string relativePath = "Assets" + e.Data.Replace(appDataPath, "");
+            //Asset bundle refs have the guid in anyway
+            //var assetImporter = AssetImporter.GetAtPath(assetPath);
+            //if (assetImporter != null && !string.IsNullOrEmpty(assetImporter.assetBundleName))
+            //{
+            //    var assetbundlepath = assetPath.Remove(0, 7);
+            //    searchArgment += " OR " + AssetBundleManager.BundleAndAssetToRef(assetImporter.assetBundleName, assetPath, guid);
+            //}
+        }
 
-            // we don't care about meta files.
-            if (relativePath == selectedAssetPath + ".meta")
-            {
-                return;
-            }
+        searchArgment += ")";
 
-            references.Add(relativePath);
-        };
-        //process.ErrorDataReceived += (sender, e) =>
-        //{
-        //    if (string.IsNullOrEmpty(e.Data))
-        //    {
-        //        return;
-        //    }
 
-        //    output += "Error: " + e.Data + "\n";
-        //};
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        process.WaitForExit(2000);
-        return references;
+        var processStartInfo = new ProcessStartInfo {FileName = "/bin/sh"};
+        processStartInfo.Arguments = " -c \"/usr/bin/mdfind " + pathArgment + " '" + fileTypeArgment + "&&" + searchArgment +"' > " + a_outputPath + "\"";
+       
+        return new Process { StartInfo = processStartInfo };
     }
 
 #else
