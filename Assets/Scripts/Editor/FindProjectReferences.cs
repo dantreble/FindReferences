@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using UnityEngine;
 using UnityEditor;
 using System.Collections.Generic;
@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using UnityEngine.Audio;
 using Debug = UnityEngine.Debug;
 using Object = UnityEngine.Object;
 
@@ -21,8 +22,25 @@ public class FindProjectReferences : EditorWindow
     [SerializeField]
     private DefaultAsset m_directory;
 
+    [System.Serializable]
+    [Flags]
+    public enum FileTypes
+    {
+        Prefab = 1<<0,
+        Unity = 1<<1,
+        Asset = 1<<2,
+        Mat = 1<<3,
+        Controller = 1<<4,
+        Meta = 1<<5
+    }
+
+    [SerializeField]
+    private FileTypes m_fileTypes = FileTypes.Prefab | FileTypes.Unity | FileTypes.Asset | FileTypes.Mat | FileTypes.Controller;
+
+
     private Process m_process;
     private string m_outputPath;
+    private Vector2 m_scrollPosition;
 
     [MenuItem("Assets/Find References In Project", false, 2000)]
     static void ShowWindow()
@@ -33,6 +51,7 @@ public class FindProjectReferences : EditorWindow
         {
             window.m_sources = Selection.objects;
             window.SetDefaultDirectory();
+            window.SetDefaultFileTypes();
             window.StartProcess();
         }
     }
@@ -45,13 +64,102 @@ public class FindProjectReferences : EditorWindow
         }
     }
 
+    public void SetDefaultFileTypes()
+    {
+        //This is just a best (most common) guess
+
+        FileTypes fileTypes = 0;
+
+        foreach (var source in m_sources)
+        {
+            if (source is Texture || source is Shader)
+            {
+                fileTypes = fileTypes | FileTypes.Mat;
+            }
+            else if (source is Material)
+            {
+                fileTypes = fileTypes | FileTypes.Prefab | FileTypes.Unity;
+            }
+            else if (source is ScriptableObject)
+            {
+                fileTypes = fileTypes | FileTypes.Prefab | FileTypes.Unity | FileTypes.Asset;
+            }
+            else if (source is AnimationClip)
+            {
+                fileTypes = fileTypes | FileTypes.Controller;
+            }
+            else if (source is Mesh)
+            {
+                fileTypes = fileTypes | FileTypes.Prefab | FileTypes.Unity;
+            }
+            else if (source is GameObject)
+            {
+                fileTypes = fileTypes | FileTypes.Prefab | FileTypes.Unity;
+            }
+            else if (source is AudioClip)
+            {
+                fileTypes = fileTypes | FileTypes.Prefab | FileTypes.Unity;
+            }
+            else if (source is MonoScript)
+            {
+                fileTypes = fileTypes | FileTypes.Prefab | FileTypes.Unity | FileTypes.Asset; //FileTypes.Controller
+            }
+            else if (source is Avatar)
+            {
+                fileTypes = fileTypes | FileTypes.Meta;
+            }
+            else if (source is AvatarMask)
+            {
+                fileTypes = fileTypes | FileTypes.Controller;
+            }
+            else if (source is AnimatorOverrideController)
+            {
+                fileTypes = fileTypes | FileTypes.Prefab;
+            }
+            else
+            {
+                //Debug.Log(source.GetType().Name);
+                //Fallback to almost everything
+
+                fileTypes = fileTypes | FileTypes.Prefab | FileTypes.Unity | FileTypes.Asset | FileTypes.Mat |
+                            FileTypes.Controller;
+            }
+
+
+
+        }
+
+        m_fileTypes = fileTypes;
+
+    }
+
     void OnGUI()
     {
-        GUILayout.Label(m_sources.Length > 1 ? "Find Multiple References" : "Find References", EditorStyles.boldLabel);
+        GUILayout.Label(m_sources != null && m_sources.Length > 1 ? "Find Multiple References" : "Find References", EditorStyles.boldLabel);
 
         m_directory = EditorGUILayout.ObjectField("Directory : ", m_directory, typeof(DefaultAsset), false, null) as DefaultAsset;
 
-        var firstObject = m_sources.Any() ? m_sources[0] : null;
+        GUILayout.Label("File Types");
+
+        foreach (FileTypes fileType in Enum.GetValues(typeof(FileTypes)))
+        {
+            var wasSet = ((int) m_fileTypes & (int) fileType) == (int) fileType;
+            var isSet = EditorGUILayout.Toggle(fileType.ToString(),wasSet);
+
+            if (isSet != wasSet)
+            {
+                if (isSet)
+                {
+                    m_fileTypes = (FileTypes)((int) m_fileTypes | (int) fileType);
+                }
+                else
+                {
+                    m_fileTypes = (FileTypes)((int)m_fileTypes & ~(int)fileType);
+                }
+            }
+        }
+
+        var firstObject = m_sources != null && m_sources.Any() ? m_sources[0] : null;
 
         var newFirstObject = EditorGUILayout.ObjectField("Find : ", firstObject, typeof(Object), false, null);
 
@@ -77,6 +185,8 @@ public class FindProjectReferences : EditorWindow
             {
                 GUILayout.Label("Found " + m_references.Count + " references", EditorStyles.boldLabel);
 
+                m_scrollPosition = GUILayout.BeginScrollView(m_scrollPosition);
+
                 foreach (var reference in m_references)
                 {
                     GUILayout.BeginHorizontal();
@@ -88,49 +198,52 @@ public class FindProjectReferences : EditorWindow
                     //    Selection.activeObject = AssetDatabase.LoadMainAssetAtPath(reference);
                     //}
 
-                    EditorGUILayout.ObjectField(AssetDatabase.LoadMainAssetAtPath(reference), typeof(Object), false, null);
+                    EditorGUILayout.ObjectField(ReferenceToObj(reference), typeof(Object), false, null);
 
                     GUILayout.EndHorizontal();
                 }
 
+                GUILayout.EndScrollView();
+
                 if (m_references.Any())
                 {
+                    if (GUILayout.Button("Select All"))
+                    {
+                        var objects = new Object[m_references.Count];
+
+                        for (var index = 0; index < m_references.Count; index++)
+                        {
+                            objects[index] = ReferenceToObj(m_references[index]);
+                        }
+
+                        Selection.objects = objects;
+                    }
+
                     m_replacement = EditorGUILayout.ObjectField("Replace : ", m_replacement, typeof(Object), false, null);
 
                     if (GUILayout.Button("Replace"))
                     {
                         var textReplacements = new List<KeyValuePair<string, string>>(m_sources.Length);
 
-                        var replacementAssetPath = AssetDatabase.GetAssetPath(m_replacement);
-                        var replacementGUID = AssetDatabase.AssetPathToGUID(replacementAssetPath);
+                        var replacementGUID = m_replacement != null ? AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m_replacement)) : null;
 
-                        var replacementResourcesIndex = replacementAssetPath.IndexOf(ResourcesDir, StringComparison.OrdinalIgnoreCase);
-
+                        var replaceFileRef = replacementGUID == null
+                            ? "0"
+                            : string.Format("2800000, guid: {0}, type: 3", replacementGUID);
 
                         foreach (var source in m_sources)
                         {
                             var sourceAssetPath = AssetDatabase.GetAssetPath(source);
                             var sourceGUID = AssetDatabase.AssetPathToGUID(sourceAssetPath);
 
-                            textReplacements.Add(new KeyValuePair<string, string>(sourceGUID, replacementGUID));
+                            var sourceFileRef = string.Format("2800000, guid: {0}, type: 3", sourceGUID);
 
-                            var sourceResourcesIndex = sourceAssetPath.IndexOf(ResourcesDir, StringComparison.OrdinalIgnoreCase);
+                            textReplacements.Add(new KeyValuePair<string, string>(sourceFileRef, replaceFileRef));
 
-                            if (sourceResourcesIndex >= 0 && replacementResourcesIndex >= 0)
+                            if (replacementGUID != null)
                             {
-                                var sourceResourcesPath = Path.ChangeExtension(sourceAssetPath.Substring(sourceResourcesIndex + ResourcesDir.Length), null);
-                                var replacementResourcesPath = Path.ChangeExtension(replacementAssetPath.Substring(replacementResourcesIndex + ResourcesDir.Length), null);
-
-                                textReplacements.Add(new KeyValuePair<string, string>(sourceResourcesPath,
-                                    replacementResourcesPath));
+                                textReplacements.Add(new KeyValuePair<string, string>(sourceGUID, replacementGUID));
                             }
-
-                            //var assetImporter = AssetImporter.GetAtPath(sourceAssetPath);
-                            //if (assetImporter != null && !string.IsNullOrEmpty(assetImporter.assetBundleName))
-                            //{
-                            //    var assetbundlepath = assetPath.Remove(0, 7);
-                            //    searchArgment += " OR " + assetbundlepath;
-                            //}
                         }
 
                         foreach (var reference in m_references)
@@ -148,6 +261,27 @@ public class FindProjectReferences : EditorWindow
                 }
             }
         }
+    }
+
+    private static Object ReferenceToObj(string a_reference)
+    {
+        Object obj = null;
+
+        if (!a_reference.EndsWith(".meta"))
+        {
+            obj = AssetDatabase.LoadMainAssetAtPath(a_reference);
+        }
+        else
+        {
+            var allAssetsAtPath = AssetDatabase.LoadAllAssetsAtPath(a_reference.Replace(".meta", ""));
+
+            if (allAssetsAtPath.Length > 0)
+            {
+                obj =
+                    allAssetsAtPath[0];
+            }
+        }
+        return obj;
     }
 
     private void Update()
@@ -195,7 +329,20 @@ public class FindProjectReferences : EditorWindow
                     continue;
                 }
 
-                a_references.Add(fields[0].Substring(assets));
+                var length = fields[0].Length - assets;
+
+                //if (fields[0].EndsWith(".meta", StringComparison.Ordinal))
+                //{
+                //    length -= 5;
+                //}
+
+                var filename = fields[0].Substring(assets, length);
+                if(fields.Length > 7)
+                {
+                    filename = string.Concat(filename, fields[1]);
+                }
+
+                a_references.Add(filename);
             }
         }
 
@@ -213,7 +360,7 @@ public class FindProjectReferences : EditorWindow
 
             var path = string.IsNullOrEmpty(directoryPath) ? Application.dataPath : Path.GetFullPath(directoryPath);
 
-            m_process = CreateProcess(m_sources, path, m_outputPath);
+            m_process = CreateProcess(m_sources, path, m_fileTypes, m_outputPath);
             m_process.Start();
         }
     }
@@ -222,12 +369,27 @@ public class FindProjectReferences : EditorWindow
 
 #if UNITY_EDITOR_OSX
 
-    public static Process CreateProcess(Object[] a_objects, string a_path, string a_outputPath)
+    public static Process CreateProcess(Object[] a_objects, string a_path, FileTypes a_fileTypes, string a_outputPath)
     {
         // /bin/sh -c "/usr/bin/mdfind  -onlyin /Users/dan/Documents/hof2/Assets '(kMDItemDisplayName==*.unity||kMDItemDisplayName==*.prefab||kMDItemDisplayName==*.asset||kMDItemDisplayName==*.mat)&&(kMDItemTextContent=\"b0f572c827a1f6146a10c19119414b1c\"c)' > foo.foo"
          
         var pathArgment = " -onlyin " + a_path;
-        var fileTypeArgment = "(kMDItemDisplayName==*.unity||kMDItemDisplayName==*.prefab||kMDItemDisplayName==*.asset||kMDItemDisplayName==*.mat)";
+        //var fileTypeArgment = "(kMDItemDisplayName==*.unity||kMDItemDisplayName==*.prefab||kMDItemDisplayName==*.asset||kMDItemDisplayName==*.mat||kMDItemDisplayName==*.controller||kMDItemDisplayName==*.meta)";
+
+        var fileTypeArgment = "(";
+
+        foreach (FileTypes fileType in Enum.GetValues(typeof(FileTypes)))
+        {
+            var isSet = ((int)a_fileTypes & (int)fileType) == (int)fileType;
+            if (isSet)
+            {
+                fileTypeArgment += "kMDItemDisplayName==*." + fileType.ToString().ToLower() + "||";
+            }
+        }
+
+        fileTypeArgment = fileTypeArgment.Remove(fileTypeArgment.LastIndexOf("||"));
+
+        fileTypeArgment += ")";
 
 
         var searchArgment = "(";
@@ -283,7 +445,7 @@ public class FindProjectReferences : EditorWindow
         return path;
     }
 
-    public static Process CreateProcess(Object[] a_objects, string a_path, string a_outputPath)
+    public static Process CreateProcess(Object[] a_objects, string a_path, FileTypes a_fileTypes, string a_outputPath)
     {
         var agantRansackPath = AgentRansackPath();
 
@@ -296,7 +458,22 @@ public class FindProjectReferences : EditorWindow
         var processStartInfo = new ProcessStartInfo {FileName = agantRansackPath};
 
         var pathArgment = " -d \"" + a_path.Replace("/", "\\") + "\" ";
-        var fileTypeArgment = " -f \"*.unity;*.prefab;*.asset;*.mat\" ";
+        //var fileTypeArgment = " -f \"*.unity;*.prefab;*.asset;*.mat;*.controller;*.meta\" ";
+
+        var fileTypeArgment = " -f \"";
+
+        foreach (FileTypes fileType in Enum.GetValues(typeof (FileTypes)))
+        {
+            var isSet = ((int)a_fileTypes & (int) fileType) == (int) fileType;
+            if (isSet)
+            {
+                fileTypeArgment += "*." + fileType.ToString().ToLower() + ";";
+            }
+        }
+
+        fileTypeArgment.Remove(fileTypeArgment.LastIndexOf(";"));
+
+        fileTypeArgment += "\" ";
 
         var searchArgment = " -ceb -cm -c \"";
 
